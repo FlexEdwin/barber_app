@@ -9,14 +9,14 @@ import { LogOut } from 'lucide-react';
 // Layout del Admin
 const AdminLayout = ({ children, session }) => (
   <div className="min-h-screen bg-gray-50">
-    <nav className="bg-black text-white p-4 sticky top-0 z-50">
-      <div className="max-w-5xl mx-auto flex justify-between items-center">
-        <span className="font-bold text-xl">Panel de Control</span>
+    <nav className="bg-black text-white p-4 sticky top-0 z-50 shadow-md">
+      <div className="max-w-6xl mx-auto flex justify-between items-center">
+        <span className="font-bold text-xl tracking-tight">Panel de Control</span>
         <div className="flex items-center gap-4">
           <span className="text-xs text-gray-400 hidden sm:inline">{session.user.email}</span>
           <button 
             onClick={() => supabase.auth.signOut()} 
-            className="text-sm bg-gray-800 px-3 py-1 rounded hover:bg-gray-700 flex gap-2 items-center"
+            className="text-sm bg-gray-800 px-4 py-2 rounded-lg hover:bg-gray-700 flex gap-2 items-center transition-all"
           >
             <LogOut size={14} /> Salir
           </button>
@@ -42,14 +42,12 @@ function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  if (loading) return <div className="h-screen flex items-center justify-center font-bold">Cargando...</div>;
+  if (loading) return <div className="h-screen flex items-center justify-center font-bold text-gray-500">Cargando sistema...</div>;
 
   return (
     <BrowserRouter>
       <Routes>
-        {/* --- PRIORIDAD 1: RUTAS ESPECÍFICAS (Fijas) --- */}
-        {/* Deben ir ANTES de las rutas dinámicas */}
-        
+        {/* 1. RUTAS FIJAS (Prioridad Alta) */}
         <Route path="/login" element={!session ? <Login /> : <Navigate to="/admin" />} />
         
         <Route path="/admin" element={
@@ -62,14 +60,11 @@ function App() {
           )
         } />
 
-        {/* --- PRIORIDAD 2: REDIRECCIÓN RAÍZ --- */}
+        {/* 2. REDIRECCIÓN RAÍZ */}
         <Route path="/" element={<Navigate to="/login" replace />} />
 
-        {/* --- PRIORIDAD 3: RUTAS DINÁMICAS (Variables) --- */}
-        {/* Esta captura cualquier cosa que no sea login o admin (ej: /barbero1) */}
-        {/* SIEMPRE DEBE IR AL FINAL */}
+        {/* 3. RUTA DINÁMICA (Prioridad Baja - Captura nombres de barberos) */}
         <Route path="/:slug" element={<PublicBooking />} />
-        
       </Routes>
     </BrowserRouter>
   );
