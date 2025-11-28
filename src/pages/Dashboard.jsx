@@ -1,6 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../supabase';
 import { Calendar, Clock, Trash2, User, Phone, Ban, CheckCircle, Lock, Settings, Save, X, XCircle } from 'lucide-react';
+import { useToast } from '../components/Toast';
+import Modal from '../components/Modal';
+import EmptyState from '../components/EmptyState';
+import { SkeletonGrid } from '../components/LoadingSkeleton';
 
 export default function Dashboard({ session }) {
   // --- ESTADOS ---
@@ -8,7 +12,14 @@ export default function Dashboard({ session }) {
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [takenSlots, setTakenSlots] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const [showBookingModal, setShowBookingModal] = useState(false);
+  const [selectedSlotTime, setSelectedSlotTime] = useState(null);
+  const [manualClientName, setManualClientName] = useState('');
+  const [manualClientPhone, setManualClientPhone] = useState('');
+  
+  const toast = useToast();
   
   // Configuración con valores por defecto
   const [config, setConfig] = useState({
@@ -46,8 +57,9 @@ export default function Dashboard({ session }) {
         
         if (profile?.config) setConfig(profile.config);
         
-        fetchAppointments();
-        fetchTakenSlots();
+        await fetchAppointments();
+        await fetchTakenSlots();
+        setInitialLoading(false);
     };
     loadProfileAndData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -100,10 +112,11 @@ export default function Dashboard({ session }) {
         .update({ config: config })
         .eq('id', session.user.id);
       
-      if (error) alert("Error guardando configuración");
-      else {
-          alert("¡Horario actualizado!");
-          setShowSettings(false);
+      if (error) {
+        toast.error('Error guardando configuración');
+      } else {
+        toast.success('¡Horario actualizado correctamente!');
+        setShowSettings(false);
       }
       setLoading(false);
   };
@@ -117,225 +130,310 @@ export default function Dashboard({ session }) {
         return;
     }
 
-    const nameToSave = prompt(`Cliente para las ${time}:`);
-    if (!nameToSave) return;
+    // Abrir modal en lugar de prompt
+    setSelectedSlotTime(time);
+    setShowBookingModal(true);
+  };
 
+  const handleManualBooking = async (e) => {
+    e.preventDefault();
     setLoading(true);
+    
     const { error } = await supabase.from('appointments').insert({
       barber_id: session.user.id,
       appointment_date: date,
-      appointment_time: time,
-      client_name: nameToSave,
-      client_phone: "Manual", 
+      appointment_time: selectedSlotTime,
+      client_name: manualClientName,
+      client_phone: manualClientPhone, 
       haircut_type: "General",
       status: 'scheduled'
     });
-    handleResponse(error, "Cita creada.");
+    
+    if (error) {
+      if (error.code === '23505') {
+        toast.error('Horario ocupado');
+      } else {
+        toast.error(error.message);
+      }
+    } else {
+      toast.success('Cita creada correctamente');
+      setShowBookingModal(false);
+      setManualClientName('');
+      setManualClientPhone('');
+      fetchAppointments();
+      fetchTakenSlots();
+    }
+    setLoading(false);
   };
 
   const confirmBatchBlock = async () => {
-    if (!window.confirm(`¿Bloquear ${selectedToBlock.length} horas?`)) return;
     setLoading(true);
     const updates = selectedToBlock.map(time => ({
         barber_id: session.user.id, appointment_date: date, appointment_time: time,
         client_name: "⛔ NO DISPONIBLE", haircut_type: "Bloqueo", status: 'blocked'
     }));
     const { error } = await supabase.from('appointments').upsert(updates, { onConflict: 'barber_id, appointment_date, appointment_time' });
-    handleResponse(error, "Bloqueo exitoso.");
-    setSelectedToBlock([]);
+    
+    if (error) {
+      toast.error(error.message);
+    } else {
+      toast.success(`${selectedToBlock.length} horarios bloqueados`);
+      setSelectedToBlock([]);
+      fetchAppointments();
+      fetchTakenSlots();
+    }
+    setLoading(false);
   };
 
   const blockAllDay = async () => {
-    if(!window.confirm(`⚠️ ¿CERRAR TODO el día ${date}?`)) return;
     setLoading(true);
     const updates = dynamicSlots.map(time => ({
         barber_id: session.user.id, appointment_date: date, appointment_time: time,
         client_name: "⛔ CERRADO", haircut_type: "Día Completo", status: 'blocked'
     }));
     const { error } = await supabase.from('appointments').upsert(updates, { onConflict: 'barber_id, appointment_date, appointment_time' });
-    handleResponse(error, "Día cerrado.");
-  };
-
-  const handleResponse = (error, msg) => {
+    
+    if (error) {
+      toast.error(error.message);
+    } else {
+      toast.success('Día cerrado completamente');
+      fetchAppointments();
+      fetchTakenSlots();
+    }
     setLoading(false);
-    if (error) error.code === '23505' ? alert("Horario ocupado.") : alert(error.message);
-    else { alert(msg); fetchAppointments(); fetchTakenSlots(); }
   };
 
   const handleCancel = async (id) => {
-    if (!window.confirm("¿Liberar espacio?")) return;
+    setLoading(true);
     await supabase.from('appointments').update({ status: 'cancelled' }).eq('id', id);
+    toast.success('Cita cancelada');
     fetchAppointments();
     fetchTakenSlots();
+    setLoading(false);
   };
 
   return (
     <div className="p-4 md:p-8 max-w-7xl mx-auto flex flex-col min-h-[90vh]">
       
-      {/* HEADER CON NUEVO NOMBRE */}
-      <div className="flex justify-between items-center mb-8">
+      {/* HEADER */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
         <div>
-            <h1 className="text-3xl font-extrabold text-gray-900 flex items-center gap-3">
-            Barber-app <span className="text-sm bg-black text-white px-2 py-1 rounded font-normal">ADMIN</span>
+            <h1 className="text-3xl md:text-4xl font-display font-extrabold text-gray-900 flex items-center gap-3 flex-wrap">
+              Barber-app 
+              <span className="text-sm bg-gradient-to-r from-accent-from to-accent-to text-white px-3 py-1 rounded-lg font-normal shadow-md">
+                ADMIN
+              </span>
             </h1>
-            <p className="text-xs text-gray-500 mt-1">Agenda, Administra, Crece.</p>
+            <p className="text-sm text-gray-500 mt-2">Agenda, Administra, Crece.</p>
         </div>
         
         <button 
             onClick={() => setShowSettings(!showSettings)}
-            className="flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50 transition shadow-sm font-medium"
+            className="flex items-center gap-2 bg-white border-2 border-gray-200 text-gray-700 px-5 py-2.5 rounded-xl hover:border-gray-300 hover:shadow-md transition-all active:scale-95 font-semibold touch-target"
         >
             <Settings size={18} /> Configurar Horario
         </button>
       </div>
 
-      {/* --- MODAL CONFIGURACIÓN --- */}
+      {/* MODAL CONFIGURACIÓN */}
       {showSettings && (
-          <div className="mb-8 bg-white p-6 rounded-2xl shadow-xl border-2 border-gray-100 animate-in fade-in slide-in-from-top-4">
-              <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-lg font-bold flex items-center gap-2"><Settings size={20}/> Configuración Base</h3>
-                  <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-red-500"><X size={24}/></button>
+          <div className="mb-8 bg-white p-6 md:p-8 rounded-2xl shadow-premium border border-gray-200 animate-slide-down">
+              <div className="flex justify-between items-center mb-6">
+                  <h3 className="text-xl font-bold flex items-center gap-2"><Settings size={22}/> Configuración Base</h3>
+                  <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-red-500 transition-colors">
+                    <X size={24}/>
+                  </button>
               </div>
               
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
                   <div>
-                      <label className="block text-sm font-bold text-gray-700 mb-1">Apertura</label>
-                      <select value={config.start} onChange={e => setConfig({...config, start: e.target.value})} className="w-full p-2 border rounded-lg font-bold bg-white">
+                      <label className="block text-sm font-bold text-gray-700 mb-2">Apertura</label>
+                      <select value={config.start} onChange={e => setConfig({...config, start: e.target.value})} className="w-full p-3 border-2 border-gray-200 rounded-xl font-semibold bg-white hover:border-gray-300 focus:border-accent-from focus:ring-2 focus:ring-accent-from/20 outline-none transition-all">
                           {timeOptions.map(t => <option key={t} value={t}>{t}</option>)}
                       </select>
                   </div>
                   <div>
-                      <label className="block text-sm font-bold text-gray-700 mb-1">Cierre</label>
-                      <select value={config.end} onChange={e => setConfig({...config, end: e.target.value})} className="w-full p-2 border rounded-lg font-bold bg-white">
+                      <label className="block text-sm font-bold text-gray-700 mb-2">Cierre</label>
+                      <select value={config.end} onChange={e => setConfig({...config, end: e.target.value})} className="w-full p-3 border-2 border-gray-200 rounded-xl font-semibold bg-white hover:border-gray-300 focus:border-accent-from focus:ring-2 focus:ring-accent-from/20 outline-none transition-all">
                           {timeOptions.map(t => <option key={t} value={t}>{t}</option>)}
                       </select>
                   </div>
-                  <div className="bg-orange-50 p-2 rounded-lg border border-orange-100">
-                      <label className="block text-sm font-bold text-orange-800 mb-1">Inicio Almuerzo</label>
-                      <select value={config.breakStart} onChange={e => setConfig({...config, breakStart: e.target.value})} className="w-full p-2 border rounded-lg font-bold bg-white">
+                  <div className="bg-orange-50 p-3 rounded-xl border-2 border-orange-200">
+                      <label className="block text-sm font-bold text-orange-800 mb-2">Inicio Almuerzo</label>
+                      <select value={config.breakStart} onChange={e => setConfig({...config, breakStart: e.target.value})} className="w-full p-3 border-2 border-orange-200 rounded-xl font-semibold bg-white hover:border-orange-300 focus:border-orange-400 focus:ring-2 focus:ring-orange-200 outline-none transition-all">
                           {timeOptions.map(t => <option key={t} value={t}>{t}</option>)}
                       </select>
                   </div>
-                  <div className="bg-orange-50 p-2 rounded-lg border border-orange-100">
-                      <label className="block text-sm font-bold text-orange-800 mb-1">Fin Almuerzo</label>
-                      <select value={config.breakEnd} onChange={e => setConfig({...config, breakEnd: e.target.value})} className="w-full p-2 border rounded-lg font-bold bg-white">
+                  <div className="bg-orange-50 p-3 rounded-xl border-2 border-orange-200">
+                      <label className="block text-sm font-bold text-orange-800 mb-2">Fin Almuerzo</label>
+                      <select value={config.breakEnd} onChange={e => setConfig({...config, breakEnd: e.target.value})} className="w-full p-3 border-2 border-orange-200 rounded-xl font-semibold bg-white hover:border-orange-300 focus:border-orange-400 focus:ring-2 focus:ring-orange-200 outline-none transition-all">
                           {timeOptions.map(t => <option key={t} value={t}>{t}</option>)}
                       </select>
                   </div>
               </div>
 
-              <div className="mt-6 flex justify-end">
-                  <button onClick={saveSettings} disabled={loading} className="bg-black text-white px-6 py-2 rounded-lg font-bold hover:bg-green-600 transition flex items-center gap-2">
-                      <Save size={18} /> Guardar
+              <div className="mt-8 flex justify-end">
+                  <button onClick={saveSettings} disabled={loading} className="bg-primary-950 text-white px-8 py-3 rounded-xl font-bold hover:bg-primary-800 active:scale-95 transition-all disabled:opacity-50 flex items-center gap-2 shadow-lg touch-target">
+                      <Save size={18} /> Guardar Configuración
                   </button>
               </div>
           </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 flex-grow">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 flex-grow">
         
         {/* IZQUIERDA: CALENDARIO */}
-        <div className="lg:col-span-5 bg-white p-6 rounded-2xl shadow-xl border border-gray-100 h-fit">
-          <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2"><Calendar className="w-5 h-5" /> Disponibilidad</h2>
-              <input type="date" value={date} onChange={e => setDate(e.target.value)} className="p-2 border border-gray-300 rounded-lg font-bold text-sm" />
+        <div className="lg:col-span-5 bg-white p-6 rounded-2xl shadow-premium border border-gray-200 h-fit">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+              <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                <Calendar className="w-5 h-5" /> Disponibilidad
+              </h2>
+              <input 
+                type="date" 
+                value={date} 
+                onChange={e => setDate(e.target.value)} 
+                className="p-2.5 border-2 border-gray-200 rounded-xl font-semibold text-sm hover:border-gray-300 focus:border-accent-from focus:ring-2 focus:ring-accent-from/20 outline-none transition-all" 
+              />
           </div>
 
-          <div className="flex gap-2 mb-4 bg-gray-100 p-1 rounded-lg">
-            <button onClick={() => { setIsBlocking(false); setSelectedToBlock([]); }} className={`flex-1 py-2 rounded-md text-sm font-bold transition ${!isBlocking ? 'bg-white shadow text-black' : 'text-gray-500'}`}>
+          <div className="flex gap-2 mb-4 bg-gray-100 p-1.5 rounded-xl">
+            <button 
+              onClick={() => { setIsBlocking(false); setSelectedToBlock([]); }} 
+              className={`flex-1 py-2.5 rounded-lg text-sm font-bold transition-all touch-target ${!isBlocking ? 'bg-white shadow-md text-black' : 'text-gray-500 hover:text-gray-700'}`}
+            >
                 📅 Agendar
             </button>
-            <button onClick={() => setIsBlocking(true)} className={`flex-1 py-2 rounded-md text-sm font-bold transition ${isBlocking ? 'bg-red-100 text-red-600 shadow' : 'text-gray-500'}`}>
-                ⛔ Bloquear Horas / Día
+            <button 
+              onClick={() => setIsBlocking(true)} 
+              className={`flex-1 py-2.5 rounded-lg text-sm font-bold transition-all touch-target ${isBlocking ? 'bg-red-100 text-red-600 shadow-md' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+                ⛔ Bloquear
             </button>
           </div>
 
-          <div className="mb-4 text-center min-h-[40px]">
+          <div className="mb-4 text-center min-h-[48px] flex items-center justify-center">
             {isBlocking ? (
                 <button 
                     onClick={blockAllDay} 
-                    className="w-full py-2 bg-red-100 text-red-700 rounded-lg text-xs font-bold hover:bg-red-200 border border-red-200 flex items-center justify-center gap-2 transition"
+                    disabled={loading}
+                    className="w-full py-2.5 bg-red-100 text-red-700 rounded-xl text-sm font-bold hover:bg-red-200 active:scale-95 border-2 border-red-200 flex items-center justify-center gap-2 transition-all disabled:opacity-50 touch-target"
                 >
-                    <XCircle size={14} /> CERRAR ESTE DÍA COMPLETO
+                    <XCircle size={16} /> CERRAR ESTE DÍA COMPLETO
                 </button>
             ) : (
-                <p className="text-xs text-gray-400 pt-2">Selecciona una hora para agendar manualmente.</p>
+                <p className="text-sm text-gray-500">Selecciona una hora para agendar manualmente</p>
             )}
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
-            {dynamicSlots.map(slot => {
-              const isTaken = takenSlots.includes(slot);
-              const isSelected = selectedToBlock.includes(slot);
-              return (
-                <button 
-                  key={slot} 
-                  disabled={isTaken || loading}
-                  onClick={() => handleSlotClick(slot)}
-                  className={`
-                    py-3 px-1 rounded-lg text-sm font-bold transition-all border relative
-                    ${isTaken 
-                      ? 'bg-gray-50 text-gray-300 border-gray-100 cursor-not-allowed' 
-                      : isBlocking && isSelected
-                        ? 'bg-red-600 text-white border-red-700 scale-95' 
-                        : isBlocking
-                            ? 'bg-white text-red-600 border-red-200 hover:bg-red-50' 
-                            : 'bg-black text-white border-black hover:bg-gray-800' 
-                    }
-                  `}
-                >
-                  {slot} 
-                  {isSelected && <CheckCircle size={14} className="absolute top-1 right-1 text-white" />}
-                </button>
-              )
-            })}
-          </div>
+          {initialLoading ? (
+            <SkeletonGrid cols={3} rows={3} />
+          ) : (
+            <div className="grid grid-cols-3 gap-3">
+              {dynamicSlots.map(slot => {
+                const isTaken = takenSlots.includes(slot);
+                const isSelected = selectedToBlock.includes(slot);
+                return (
+                  <button 
+                    key={slot} 
+                    disabled={isTaken || loading}
+                    onClick={() => handleSlotClick(slot)}
+                    className={`
+                      py-3 px-2 rounded-xl text-sm font-bold transition-all border-2 relative touch-target
+                      ${isTaken 
+                        ? 'bg-gray-50 text-gray-300 border-gray-100 cursor-not-allowed' 
+                        : isBlocking && isSelected
+                          ? 'bg-red-600 text-white border-red-700 scale-95 shadow-lg' 
+                          : isBlocking
+                              ? 'bg-white text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300' 
+                              : 'bg-primary-950 text-white border-primary-950 hover:bg-primary-800 hover:scale-105 shadow-md' 
+                      }
+                    `}
+                  >
+                    {slot} 
+                    {isSelected && <CheckCircle size={14} className="absolute top-1 right-1 text-white" />}
+                  </button>
+                )
+              })}
+            </div>
+          )}
 
-          {dynamicSlots.length === 0 && <p className="text-center text-gray-400 py-10">No hay horarios configurados.</p>}
+          {dynamicSlots.length === 0 && !initialLoading && (
+            <EmptyState 
+              icon={Clock}
+              title="No hay horarios configurados"
+              description="Configura tu horario de atención para comenzar"
+            />
+          )}
 
           {isBlocking && selectedToBlock.length > 0 && (
-              <button onClick={confirmBatchBlock} className="w-full mt-6 py-3 bg-red-800 text-white rounded-xl font-bold hover:bg-red-900 shadow-lg animate-bounce">
-                <Lock size={16} className="inline mr-2" /> CONFIRMAR BLOQUEO
+              <button 
+                onClick={confirmBatchBlock} 
+                disabled={loading}
+                className="w-full mt-6 py-3.5 bg-red-800 text-white rounded-xl font-bold hover:bg-red-900 active:scale-95 shadow-lg transition-all disabled:opacity-50 flex items-center justify-center gap-2 touch-target"
+              >
+                <Lock size={18} /> CONFIRMAR BLOQUEO ({selectedToBlock.length})
               </button>
           )}
         </div>
 
         {/* DERECHA: LISTADO */}
-        <div className="lg:col-span-7 bg-white p-6 rounded-2xl shadow-xl border border-gray-100 flex flex-col h-[600px]">
-          <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Clock className="w-5 h-5" /> Agenda: {date}</h2>
+        <div className="lg:col-span-7 bg-white p-6 rounded-2xl shadow-premium border border-gray-200 flex flex-col h-[600px]">
+          <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800">
+            <Clock className="w-5 h-5" /> Agenda: {date}
+          </h2>
           
           <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
             {appointments.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-gray-400">
-                <p>No hay citas para este día.</p>
-              </div>
+              <EmptyState 
+                icon={Calendar}
+                title="No hay citas para este día"
+                description="Las citas agendadas aparecerán aquí"
+              />
             ) : (
               <ul className="space-y-3">
                 {appointments.map(appt => {
                     const isBlocked = appt.status === 'blocked';
+                    if (appt.status === 'cancelled') return null;
+                    
                     return (
-                      <li key={appt.id} className={`flex justify-between p-4 rounded-xl border ${appt.status === 'cancelled' ? 'hidden' : 'bg-gray-50 border-gray-200'}`}>
-                        <div className="w-full">
-                          <div className="flex items-center gap-3 mb-2">
-                             <span className="font-bold text-xl text-gray-900 bg-white px-3 py-1 rounded border shadow-sm">
-                                {appt.appointment_time.slice(0, 5)}
-                             </span>
-                             {isBlocked 
-                                ? <span className="text-xs font-bold bg-red-100 text-red-700 px-2 py-1 rounded-full flex items-center gap-1"><Ban size={12}/> NO DISPONIBLE</span>
-                                : <span className="text-xs font-bold bg-green-100 text-green-700 px-2 py-1 rounded-full flex items-center gap-1"><CheckCircle size={12}/> CLIENTE</span>
-                             }
+                      <li key={appt.id} className="bg-gray-50 border-2 border-gray-200 p-4 rounded-xl hover:border-gray-300 hover:shadow-md transition-all">
+                        <div className="flex justify-between items-start gap-4">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-3 mb-3">
+                               <span className="font-bold text-2xl text-gray-900 bg-white px-4 py-2 rounded-lg border-2 border-gray-200 shadow-sm">
+                                  {appt.appointment_time.slice(0, 5)}
+                               </span>
+                               {isBlocked 
+                                  ? <span className="text-xs font-bold bg-red-100 text-red-700 px-3 py-1.5 rounded-full flex items-center gap-1.5 border border-red-200">
+                                      <Ban size={12}/> NO DISPONIBLE
+                                    </span>
+                                  : <span className="text-xs font-bold bg-green-100 text-green-700 px-3 py-1.5 rounded-full flex items-center gap-1.5 border border-green-200">
+                                      <CheckCircle size={12}/> CLIENTE
+                                    </span>
+                               }
+                            </div>
+                            
+                            {!isBlocked && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                  <div className="flex items-center gap-2 text-gray-800 text-sm font-semibold">
+                                    <User size={16} className="text-gray-400"/> {appt.client_name}
+                                  </div>
+                                  <div className="flex items-center gap-2 text-gray-600 text-sm font-medium">
+                                    <Phone size={16} className="text-gray-400"/> {appt.client_phone}
+                                  </div>
+                                </div>
+                            )}
                           </div>
                           
-                          {!isBlocked && (
-                              <div className="grid grid-cols-2 gap-4 mt-2">
-                                <div className="flex items-center gap-2 text-gray-800 text-sm font-bold"><User size={14} className="text-gray-400"/> {appt.client_name}</div>
-                                <div className="flex items-center gap-2 text-gray-600 text-sm"><Phone size={14} className="text-gray-400"/> {appt.client_phone}</div>
-                              </div>
-                          )}
+                          <button 
+                            onClick={() => handleCancel(appt.id)} 
+                            disabled={loading}
+                            className="text-gray-300 hover:text-red-600 hover:bg-red-50 p-2.5 rounded-full transition-all disabled:opacity-50 touch-target"
+                            title="Cancelar cita"
+                          >
+                              <Trash2 size={20} />
+                          </button>
                         </div>
-                        <button onClick={() => handleCancel(appt.id)} className="text-gray-300 hover:text-red-600 p-2 hover:bg-red-50 rounded-full self-center">
-                            <Trash2 size={20} />
-                        </button>
                       </li>
                     )
                 })}
@@ -345,11 +443,67 @@ export default function Dashboard({ session }) {
         </div>
       </div>
 
-      {/* FOOTER DEL DASHBOARD */}
-      <footer className="mt-12 mb-6 text-center text-gray-400 text-xs">
+      {/* MODAL DE RESERVA MANUAL */}
+      <Modal 
+        isOpen={showBookingModal} 
+        onClose={() => {
+          setShowBookingModal(false);
+          setManualClientName('');
+          setManualClientPhone('');
+        }}
+        title={`Agendar cita - ${selectedSlotTime}`}
+      >
+        <form onSubmit={handleManualBooking} className="space-y-4">
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-2">Nombre del Cliente</label>
+            <input
+              type="text"
+              required
+              value={manualClientName}
+              onChange={(e) => setManualClientName(e.target.value)}
+              className="w-full p-3 border-2 border-gray-200 rounded-xl focus:border-accent-from focus:ring-2 focus:ring-accent-from/20 outline-none transition-all"
+              placeholder="Ej: Juan Pérez"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-2">Teléfono</label>
+            <input
+              type="tel"
+              required
+              value={manualClientPhone}
+              onChange={(e) => setManualClientPhone(e.target.value)}
+              className="w-full p-3 border-2 border-gray-200 rounded-xl focus:border-accent-from focus:ring-2 focus:ring-accent-from/20 outline-none transition-all"
+              placeholder="Ej: 300 123 4567"
+            />
+          </div>
+          <div className="flex gap-3 pt-4">
+            <button
+              type="button"
+              onClick={() => {
+                setShowBookingModal(false);
+                setManualClientName('');
+                setManualClientPhone('');
+              }}
+              className="flex-1 py-3 border-2 border-gray-200 rounded-xl font-semibold text-gray-700 hover:bg-gray-50 transition-all touch-target"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="flex-1 py-3 bg-primary-950 text-white rounded-xl font-bold hover:bg-primary-800 active:scale-95 transition-all disabled:opacity-50 shadow-lg touch-target"
+            >
+              {loading ? 'Guardando...' : 'Confirmar Cita'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* FOOTER */}
+      <footer className="mt-12 mb-6 text-center text-gray-400 text-xs space-y-1">
         <p>© 2025 Barber-app SaaS. Todos los derechos reservados.</p>
-        <p className="mt-1">Ideada y Desarrollada por <strong>flexedwin</strong></p>
-        <p className="mt-1 text-gray-300">Soporte: 3166173884 | @flexedwin</p>
+        <p>Ideada y Desarrollada por <strong className="text-gray-500">flexedwin</strong></p>
+        <p className="text-gray-400">Soporte: 3166173884 | @flexedwin</p>
       </footer>
     </div>
   );
